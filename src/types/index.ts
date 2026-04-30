@@ -10,6 +10,7 @@ export interface Question {
 export type Mode = "practice" | "simulation";
 export type Subject = "verbal" | "math" | "english";
 export type Level = "easy" | "medium" | "hard";
+export type Screen = "home" | "quiz" | "results" | "review";
 
 export type Topic =
   | "analogies"
@@ -42,4 +43,28 @@ export interface AppConfig {
   subjectLabels: Record<Subject, string>;
   subjectColors: Record<Subject, string>;
   chapters: Record<Subject, ChapterItem[]>;
+}
+
+export interface StudySession {
+  id: string;
+  startedAt: number;
+  completedAt: number;
+  durationSeconds: number;
+  mode: Mode;
+  subject: Subject;
+  topic?: Topic;
+  level?: Level;
+  totalQuestions: number;
+  correct: number;
+  wrong: number;
+  skipped: number;
+  score: number;
+  itemBreakdown?: SessionItem[];
+}
+
+export interface SessionItem {
+  topic: Topic;
+  level: Level;
+  answered: boolean;
+  correct: boolean;
 }

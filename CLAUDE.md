@@ -14,45 +14,84 @@ Hebrew RTL psychometric (פסיכומטרי) prep app. This file is loaded into 
 
 ```
 app/
-  layout.js           # root layout, lang="he" dir="rtl"
-  page.tsx            # 478-line main app — all state & flow lives here
-  globals.css         # tailwind entry
+  layout.js              # root layout, lang="he" dir="rtl"
+  page.tsx               # screen routing + API-key gate; quiz logic lives in useQuiz
+  globals.css            # tailwind entry
 components/
-  Sidebar.tsx         # left nav: subject, topic, level, mode
-  QuestionCard.tsx    # question + 4 answers + reveal feedback + nav
-  Timer.tsx           # countdown display (urgent state when low)
+  Sidebar.tsx            # left nav: subject, topic, level, mode
+  QuestionCard.tsx       # question + 4 answers + reveal feedback + nav
+  Timer.tsx              # countdown display (urgent state when low)
 data/
-  questions.json      # config: practiceTotal, durations, labels (HE), chapter blueprints per subject
+  questions.json         # config: practiceTotal, durations, labels (HE), chapter blueprints per subject
 src/
-  types/index.ts      # Question, Mode, Subject, Level, Topic, ChapterItem, AppConfig
+  hooks/
+    useQuiz.ts           # quiz lifecycle: state, timers, loadQuestion, scoring, StudySession save
+  types/index.ts         # Question, Mode, Subject, Level, Topic, Screen, ChapterItem, AppConfig, StudySession
   data/
-    config.ts         # typed wrapper around questions.json
-    questions.ts      # QUESTION_PROMPTS: per-(subject,topic) prompt builders sent to Claude
-psychometric-prep.html # legacy single-file version, kept for reference; not part of build
+    config.ts            # typed wrapper around questions.json
+    questions.ts         # QUESTION_PROMPTS: per-(subject,topic) prompt builders sent to Claude
+    history.ts           # localStorage-backed StudySession persistence + per-topic/subject stats
+psychometric-prep.html   # legacy single-file version, kept for reference; not part of build
 ```
 
-## Domain model
+## Source of Truth — domain values
 
-- **Subjects:** `verbal` | `math` | `english`
-- **Modes:**
-  - `practice` — single topic, `config.practiceTotal` questions, per-question timer (`questionDuration`), each question locks once answered or time expires.
-  - `simulation` — full chapter for the chosen subject, single chapter timer (`chapterDuration`), no per-question lock.
-- **Screens:** `home` → `quiz` → `results` → `review`.
-- **Topics:** enumerated in `src/types/index.ts`. Each has a Hebrew label in `questions.json#topicLabels` and a prompt builder in `src/data/questions.ts` keyed `${subject}_${topic}`.
+```
+Subjects:        verbal | math | english
+Levels:          easy | medium | hard
+Modes:           practice | simulation
+Screens:         home | quiz | results | review
 
-## Question generation flow
+Topics by subject:
+  verbal  → analogies, inference, reading, completion
+  math    → algebra, percentages, geometry, probability,
+            word_problems, sequences, graph, logic
+  english → sentence_completion, restatement, reading, vocabulary
+```
+
+Modes:
+- `practice` — single topic, `config.practiceTotal` questions, per-question timer (`questionDuration`). A question locks the moment it's answered or its timer expires.
+- `simulation` — full chapter blueprint for the chosen subject, one shared `chapterDuration` timer, no per-question lock; user can navigate freely until time runs out.
+
+## Single Source of Truth — where each value lives
+
+| Concept | Canonical location |
+|---|---|
+| `Subject` / `Level` / `Topic` / `Mode` / `Screen` union types | `src/types/index.ts` |
+| Hebrew display labels (subjects, topics, levels) | `data/questions.json` |
+| Per-(subject,topic) prompt builders | `src/data/questions.ts` (`QUESTION_PROMPTS`) |
+| Chapter blueprints for simulation mode | `data/questions.json#chapters` |
+| `StudySession` shape (history persistence) | `src/types/index.ts` + `src/data/history.ts` |
+
+**Adding a new Topic** requires updating ALL of:
+1. `Topic` union in `src/types/index.ts`
+2. `topicLabels` in `data/questions.json`
+3. `QUESTION_PROMPTS` map in `src/data/questions.ts` (key: `` `${subject}_${topic}` ``)
+4. `Sidebar.subjectTopics` in `components/Sidebar.tsx` (currently hardcoded — drift risk; eventual fix: derive from config)
+5. If applicable: add to `chapters[<subject>]` in `data/questions.json` for simulation mode
+
+**Adding a new Subject** additionally requires:
+- `subjectLabels` and `subjectColors` entries in `questions.json`
+- A `chapters[<subject>]` blueprint in `questions.json`
+- Topic prompt builders for every topic the subject covers
+
+## Quiz flow
+
+`useQuiz({ apiKey })` owns mode/subject/topic/level selection plus the entire lifecycle: question loading, timers, scoring, navigation, and StudySession persistence. `app/page.tsx` is reduced to the API-key gate, screen routing, and JSX rendering.
 
 `buildPrompt(topic, difficulty, subject)` → wraps the per-topic prompt with strict JSON schema instructions → POST to `/v1/messages` with `model: "claude-sonnet-4-5"` → parse `data.content[].text` (stripping ```json fences) → cast to `Question`.
 
 Each generated question is stored in `questions[index]` along with `_topic` and `_difficulty` for review-screen breakdowns.
 
+When `screen` becomes `"results"`, the hook saves a `StudySession` to `localStorage` under key `psych_history` (see `src/data/history.ts`). Save is dedup'd via a `sessionRef` so revisiting results doesn't double-save.
+
 ## Conventions
 
 - **RTL throughout.** All UI strings are Hebrew except English-subject question prompts.
-- **Path alias:** `@/*` maps to repo root. Use `@/components/...`, `@/src/types`, `@/src/data/config`.
-- **No external state lib.** All state is `useState` inside `app/page.tsx`. Refs for timers (`questionTimerRef`, `chapterTimerRef`).
+- **Path alias:** `@/*` maps to repo root. Use `@/components/...`, `@/src/types`, `@/src/data/config`, `@/src/hooks/useQuiz`.
+- **State lives in hooks, not components.** `useQuiz` owns quiz state; components are presentational.
 - **Tailwind palette:** zinc/violet/cyan dark theme. Urgent state = `text-red-400 animate-pulse`.
-- **Components are presentational.** All logic stays in `page.tsx`. If logic grows, prefer a custom hook in `src/hooks/` over moving it into a component.
+- **No external state lib** (no Redux/Zustand/etc).
 
 ## Run
 
@@ -63,18 +102,22 @@ npm run build    # production build (use as baseline check before/after changes)
 npm run lint     # next lint
 ```
 
-## Workflow notes
+The user runs the dev server locally in Cursor. Claude verifies changes with `npm run build` (TypeScript + Next compile) rather than running the dev server.
 
-- The project lives inside OneDrive (`C:\Users\matnt\OneDrive\מסמכים\Claude\Projects\psyco`). OneDrive sync occasionally collides with git index writes. If `git` reports `index file corrupt` or a stuck `.git/index.lock`, the user has to delete those from a Windows terminal — the Linux sandbox can't override OneDrive locks. Long-term consider moving to a non-synced folder.
-- The user runs the dev server locally in Cursor. Claude verifies changes with `npm run build` (TypeScript + Next compile) rather than running the dev server.
+## Update policy (anti-rot rules)
+
+- **Update CLAUDE.md in the same change as the architectural shift it describes.** Don't defer.
+- **Keep the "Source of Truth" tables current.** When a new topic/subject/screen is added, update both the inline enumeration AND the propagation checklist below it.
+- **When a schema persisted to localStorage changes** (e.g. `StudySession`): bump a version in `src/data/history.ts`, update the validator to drop entries that fail the new shape, and document the migration here.
+- **When `app/page.tsx` is refactored** (logic moved into hooks/components), rewrite the File Map and the Quiz Flow sections in the same commit.
+- **Keep total length under ~150 lines.** If a section grows beyond ~25 lines, split it into a sub-doc under `docs/<topic>.md` and link.
+- **Don't list known TODOs as commitments** — keep the Known Gaps section terse and prune as items ship.
 
 ## Known gaps / TODOs
 
 - No automated tests yet.
-- No persistence of practice results across sessions (would be next obvious feature: localStorage history of attempts per topic).
-- `app/page.tsx` is the entire app — at ~480 lines it's the natural seam for refactoring into hooks (`useQuiz`, `useTimers`, `useQuestionLoader`).
-- API key is sent from browser. Acceptable for a personal prep tool, not for production. A `/api/generate` route would be the future-proof path.
-
-## Update policy
-
-When the project changes meaningfully (new screen, new subject, refactor of `page.tsx`, new dependency), update the relevant section here. Keep total length under ~150 lines.
+- `Sidebar.subjectTopics` is hardcoded — drift risk vs `topicLabels` in `questions.json`. Should derive from config.
+- `Question._topic` and `_difficulty` are typed `string` but always `Topic` / `Level` at runtime. Tighten when going strict.
+- API key is sent from browser. Acceptable for a personal prep tool; a `/api/generate` proxy would harden this.
+- No error boundary — uncaught throws blank the screen.
+- History UI (`HistorySidebar`) is not yet built; persistence works headlessly via `useQuiz`.

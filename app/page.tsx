@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Sidebar from "@/components/Sidebar";
 import Timer from "@/components/Timer";
 import QuestionCard from "@/components/QuestionCard";
 import { config } from "@/src/data/config";
-import { QUESTION_PROMPTS } from "@/src/data/questions";
-import { Level, Mode, Question, Subject, Topic } from "@/src/types";
+import { useQuiz } from "@/src/hooks/useQuiz";
+import { Level, Topic } from "@/src/types";
 
 const API_STORAGE_KEY = "psych_api_key";
 
@@ -26,289 +26,68 @@ export default function Home() {
   const [apiInput, setApiInput] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
 
-  const [mode, setMode] = useState<Mode>("practice");
-  const [selectedSubject, setSelectedSubject] = useState<Subject>("verbal");
-  const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
-  const [level, setLevel] = useState<Level>("easy");
-
-  const [screen, setScreen] = useState<"home" | "quiz" | "results" | "review">("home");
-  const [questions, setQuestions] = useState<Question[]>([]);
-  const [userAnswers, setUserAnswers] = useState<(number | null | undefined)[]>([]);
-  const [currentQ, setCurrentQ] = useState(0);
-  const [furthestQ, setFurthestQ] = useState(0);
-  const [practiceLocked, setPracticeLocked] = useState<boolean[]>([]);
-  const [liveTimeLeft, setLiveTimeLeft] = useState(config.questionDuration);
-  const [questionTimeLeft, setQuestionTimeLeft] = useState(config.questionDuration);
-  const [chapterTimeLeft, setChapterTimeLeft] = useState(config.chapterDuration);
-  const [questionTimes, setQuestionTimes] = useState<number[]>([]);
-  const [loadingQuestion, setLoadingQuestion] = useState(false);
-  const [error, setError] = useState("");
-  const [revealResult, setRevealResult] = useState(false);
-
-  const questionStartRef = useRef(Date.now());
-  const questionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const chapterTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const totalQuestions = mode === "simulation" ? config.chapters[selectedSubject].length : config.practiceTotal;
-  const currentQuestion = questions[currentQ];
-  const selectedAnswer = userAnswers[currentQ];
-
-  const timerValue = mode === "simulation" ? toClock(chapterTimeLeft) : (revealResult ? "—" : toClock(questionTimeLeft));
-  const timerUrgent = mode === "simulation" ? chapterTimeLeft <= 60 : questionTimeLeft <= 20;
-
-  const scoreData = useMemo(() => {
-    let score = 0;
-    let correct = 0;
-    let wrong = 0;
-    let skipped = 0;
-    for (let i = 0; i < totalQuestions; i += 1) {
-      const q = questions[i];
-      const a = userAnswers[i];
-      if (!q || a === null || a === undefined) skipped += 1;
-      else if (a === q.correct) {
-        correct += 1;
-        score += 10;
-      } else wrong += 1;
-    }
-    return { score, correct, wrong, skipped };
-  }, [questions, totalQuestions, userAnswers]);
-
   useEffect(() => {
-    const saved = localStorage.getItem(API_STORAGE_KEY);
-    if (saved) {
-      setApiKey(saved);
-      setHasApiKey(true);
+    try {
+      const saved = localStorage.getItem(API_STORAGE_KEY);
+      if (saved) {
+        setApiKey(saved);
+        setHasApiKey(true);
+      }
+    } catch {
+      // ignore (e.g. Safari Private throws on getItem)
     }
   }, []);
-
-  useEffect(() => () => {
-    if (questionTimerRef.current) clearInterval(questionTimerRef.current);
-    if (chapterTimerRef.current) clearInterval(chapterTimerRef.current);
-  }, []);
-
-  useEffect(() => {
-    if (screen !== "quiz" || mode !== "practice" || revealResult || practiceLocked[currentQ]) return;
-    if (questionTimerRef.current) clearInterval(questionTimerRef.current);
-    questionTimerRef.current = setInterval(() => {
-      setQuestionTimeLeft((prev) => {
-        if (prev <= 1) {
-          if (questionTimerRef.current) clearInterval(questionTimerRef.current);
-          timeUp();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => {
-      if (questionTimerRef.current) clearInterval(questionTimerRef.current);
-    };
-  }, [screen, mode, revealResult, currentQ, practiceLocked]);
-
-  useEffect(() => {
-    if (screen !== "quiz" || mode !== "simulation") return;
-    if (chapterTimerRef.current) clearInterval(chapterTimerRef.current);
-    chapterTimerRef.current = setInterval(() => {
-      setChapterTimeLeft((prev) => {
-        if (prev <= 1) {
-          if (chapterTimerRef.current) clearInterval(chapterTimerRef.current);
-          setScreen("results");
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => {
-      if (chapterTimerRef.current) clearInterval(chapterTimerRef.current);
-    };
-  }, [screen, mode]);
 
   function saveApiKey() {
     if (!apiInput.startsWith("sk-")) {
       alert("מפתח לא תקין");
       return;
     }
-    localStorage.setItem(API_STORAGE_KEY, apiInput);
+    try {
+      localStorage.setItem(API_STORAGE_KEY, apiInput);
+    } catch {
+      // ignore
+    }
     setApiKey(apiInput);
     setHasApiKey(true);
   }
 
-  function resetQuizState() {
-    setQuestions([]);
-    setUserAnswers([]);
-    setCurrentQ(0);
-    setFurthestQ(0);
-    setPracticeLocked([]);
-    setLiveTimeLeft(config.questionDuration);
-    setQuestionTimeLeft(config.questionDuration);
-    setChapterTimeLeft(config.chapterDuration);
-    setQuestionTimes([]);
-    setRevealResult(false);
-    setError("");
-  }
+  const quiz = useQuiz({ apiKey });
 
-  function buildPrompt(topic: Topic, difficulty: Level, subject: Subject) {
-    const lv = config.levels[difficulty];
-    const key = `${subject}_${topic}`;
-    const promptBuilder = QUESTION_PROMPTS[key];
-    const prompt = promptBuilder ? promptBuilder(lv) : `Create a psychometric question on topic: ${topic}. Level: ${lv}.`;
-    return `${prompt}
-Return ONLY valid JSON:
-{
-  "question": "...",
-  "answers": ["...", "...", "...", "..."],
-  "correct": 0,
-  "explanation": "..."
-}`;
-  }
-
-  async function loadQuestion(index: number) {
-    if (questions[index]) return;
-    setLoadingQuestion(true);
-    setError("");
-
-    const blueprint = mode === "simulation"
-      ? config.chapters[selectedSubject][index]
-      : { topic: selectedTopic, difficulty: level };
-
-    if (!blueprint?.topic || !blueprint?.difficulty) {
-      setError("בחר נושא כדי להתחיל");
-      setLoadingQuestion(false);
-      return;
-    }
-
-    try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true"
-        },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-5",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: buildPrompt(blueprint.topic, blueprint.difficulty, selectedSubject) }]
-        })
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const raw = data.content.map((item: { text?: string }) => item.text || "").join("").replace(/^```json\s*/, "").replace(/```$/, "").trim();
-      const q = JSON.parse(raw) as Question;
-      q._topic = blueprint.topic;
-      q._difficulty = blueprint.difficulty;
-      setQuestions((prev) => {
-        const next = [...prev];
-        next[index] = q;
-        return next;
-      });
-    } catch (e) {
-      const err = e as Error;
-      setError(err.message || "שגיאה בטעינת שאלה");
-    } finally {
-      setLoadingQuestion(false);
-    }
-  }
-
-  useEffect(() => {
-    if (screen !== "quiz") return;
-    setRevealResult(Boolean(mode === "practice" && practiceLocked[currentQ]));
-    if (mode === "practice" && !practiceLocked[currentQ]) {
-      setQuestionTimeLeft(currentQ === furthestQ ? liveTimeLeft : config.questionDuration);
-    }
-    questionStartRef.current = Date.now();
-    loadQuestion(currentQ);
-  }, [screen, currentQ, mode]);
-
-  function startPractice() {
-    if (!selectedTopic) return;
-    setMode("practice");
-    resetQuizState();
-    setScreen("quiz");
-  }
-
-  function startSimulation(subjectKey: Subject) {
-    setMode("simulation");
-    setSelectedSubject(subjectKey);
-    resetQuizState();
-    setScreen("quiz");
-  }
-
-  function timeUp() {
-    if (mode !== "practice" || practiceLocked[currentQ]) return;
-    setPracticeLocked((prev) => {
-      const next = [...prev];
-      next[currentQ] = true;
-      return next;
-    });
-    setRevealResult(true);
-    setUserAnswers((prev) => {
-      const next = [...prev];
-      next[currentQ] = null;
-      return next;
-    });
-    setQuestionTimes((prev) => {
-      const next = [...prev];
-      next[currentQ] = config.questionDuration;
-      return next;
-    });
-    setLiveTimeLeft(config.questionDuration);
-  }
-
-  function selectAnswer(index: number) {
-    const q = questions[currentQ];
-    if (!q) return;
-    if (mode === "practice") {
-      if (practiceLocked[currentQ]) return;
-      setPracticeLocked((prev) => {
-        const next = [...prev];
-        next[currentQ] = true;
-        return next;
-      });
-      setRevealResult(true);
-      if (questionTimerRef.current) clearInterval(questionTimerRef.current);
-      const elapsed = Math.round((Date.now() - questionStartRef.current) / 1000);
-      setQuestionTimes((prev) => {
-        const next = [...prev];
-        next[currentQ] = elapsed;
-        return next;
-      });
-      setUserAnswers((prev) => {
-        const next = [...prev];
-        next[currentQ] = index;
-        return next;
-      });
-      setLiveTimeLeft(config.questionDuration);
-    } else {
-      setUserAnswers((prev) => {
-        const next = [...prev];
-        next[currentQ] = index;
-        return next;
-      });
-    }
-  }
-
-  function prevQuestion() {
-    if (currentQ === 0) return;
-    if (mode === "practice" && !practiceLocked[currentQ] && currentQ === furthestQ) setLiveTimeLeft(questionTimeLeft);
-    setCurrentQ((prev) => prev - 1);
-  }
-
-  function nextQuestion() {
-    if (mode === "practice" && !practiceLocked[currentQ] && currentQ === furthestQ) setLiveTimeLeft(questionTimeLeft);
-    const next = currentQ + 1;
-    if (next > furthestQ) setFurthestQ(next);
-    if (next >= totalQuestions) {
-      setScreen("results");
-      return;
-    }
-    setCurrentQ(next);
-  }
-
-  function restartSame() {
-    if (mode === "simulation") startSimulation(selectedSubject);
-    else startPractice();
-  }
+  const {
+    mode,
+    setMode,
+    selectedSubject,
+    setSelectedSubject,
+    selectedTopic,
+    setSelectedTopic,
+    level,
+    setLevel,
+    screen,
+    questions,
+    currentQ,
+    userAnswers,
+    totalQuestions,
+    currentQuestion,
+    selectedAnswer,
+    loadingQuestion,
+    error,
+    revealResult,
+    timer,
+    scoreData,
+    chapterTimeUsed,
+    avgQuestionTime,
+    startPractice,
+    startSimulation,
+    selectAnswer,
+    nextQuestion,
+    prevQuestion,
+    restartSame,
+    goHome,
+    goReview,
+    goResults,
+    retryLoad
+  } = quiz;
 
   if (!hasApiKey) {
     return (
@@ -334,8 +113,6 @@ Return ONLY valid JSON:
   }
 
   if (screen === "results") {
-    const avg = questionTimes.length ? Math.round(questionTimes.reduce((a, b) => a + b, 0) / questionTimes.length) : 0;
-    const used = config.chapterDuration - chapterTimeLeft;
     return (
       <main className="mx-auto min-h-screen max-w-4xl px-6 py-10 text-center">
         <div className="mx-auto mb-6 flex h-36 w-36 flex-col items-center justify-center rounded-full border-4 border-violet-500">
@@ -346,12 +123,12 @@ Return ONLY valid JSON:
           <div><div className="text-2xl font-bold text-cyan-300">{scoreData.correct}</div><div className="text-sm text-zinc-400">נכון</div></div>
           <div><div className="text-2xl font-bold text-red-400">{scoreData.wrong}</div><div className="text-sm text-zinc-400">שגוי</div></div>
           {mode === "simulation" ? <div><div className="text-2xl font-bold text-zinc-400">{scoreData.skipped}</div><div className="text-sm text-zinc-400">דילגת</div></div> : null}
-          <div><div className="text-2xl font-bold text-violet-400">{mode === "simulation" ? toClock(used) : `${avg}ש`}</div><div className="text-sm text-zinc-400">{mode === "simulation" ? "זמן כולל" : "זמן ממוצע"}</div></div>
+          <div><div className="text-2xl font-bold text-violet-400">{mode === "simulation" ? toClock(chapterTimeUsed) : `${avgQuestionTime}ש`}</div><div className="text-sm text-zinc-400">{mode === "simulation" ? "זמן כולל" : "זמן ממוצע"}</div></div>
         </div>
         <div className="flex justify-center gap-2">
           <button onClick={restartSame} className="rounded-full border border-violet-500 px-5 py-2 text-violet-300">עוד סיבוב</button>
-          <button onClick={() => setScreen("home")} className="rounded-full border border-violet-500 px-5 py-2 text-violet-300">חזרה לתפריט</button>
-          {mode === "simulation" ? <button onClick={() => setScreen("review")} className="rounded-full border border-violet-500 px-5 py-2 text-violet-300">סקירת שאלות</button> : null}
+          <button onClick={goHome} className="rounded-full border border-violet-500 px-5 py-2 text-violet-300">חזרה לתפריט</button>
+          {mode === "simulation" ? <button onClick={goReview} className="rounded-full border border-violet-500 px-5 py-2 text-violet-300">סקירת שאלות</button> : null}
         </div>
       </main>
     );
@@ -362,7 +139,7 @@ Return ONLY valid JSON:
       <main className="mx-auto min-h-screen max-w-4xl px-6 py-8">
         <div className="mb-5 flex items-center justify-between border-b border-white/10 pb-3">
           <h2 className="text-xl font-semibold">סקירת שאלות</h2>
-          <button className="rounded-full border border-violet-500 px-4 py-2 text-violet-300" onClick={() => setScreen("results")}>חזרה לסיכום</button>
+          <button className="rounded-full border border-violet-500 px-4 py-2 text-violet-300" onClick={goResults}>חזרה לסיכום</button>
         </div>
         <div className="space-y-3">
           {questions.map((q, index) => {
@@ -373,7 +150,7 @@ Return ONLY valid JSON:
               <div key={index} className="rounded-2xl border border-white/10 bg-zinc-900 p-4">
                 <div className="mb-2 flex items-center justify-between">
                   <div className="text-sm font-semibold">
-                    שאלה {index + 1} · {q._topic ? config.topicLabels[q._topic] : ""} · {q._difficulty ? config.levels[q._difficulty] : ""}
+                    שאלה {index + 1} · {q._topic ? config.topicLabels[q._topic as Topic] : ""} · {q._difficulty ? config.levels[q._difficulty as Level] : ""}
                   </div>
                   <span className={`rounded-full px-2 py-1 text-xs ${isSkipped ? "bg-zinc-800 text-zinc-400" : isCorrect ? "bg-cyan-400/20 text-cyan-300" : "bg-red-500/20 text-red-300"}`}>
                     {isSkipped ? "דילגת" : isCorrect ? "נכון" : "שגוי"}
@@ -433,7 +210,7 @@ Return ONLY valid JSON:
               ) : null}
               <span className="text-zinc-400">שאלה {currentQ + 1} מתוך {totalQuestions}</span>
             </div>
-            <Timer value={timerValue} urgent={timerUrgent} />
+            <Timer value={timer.value} urgent={timer.urgent} />
           </div>
 
           <div className="mb-6 h-1 rounded bg-white/10">
@@ -445,7 +222,7 @@ Return ONLY valid JSON:
           ) : error ? (
             <div className="rounded-2xl border border-red-400/40 bg-red-500/10 p-10 text-center">
               <div className="mb-3">{error}</div>
-              <button className="rounded-full border border-violet-500 px-4 py-2 text-violet-300" onClick={() => loadQuestion(currentQ)}>נסה שוב</button>
+              <button className="rounded-full border border-violet-500 px-4 py-2 text-violet-300" onClick={retryLoad}>נסה שוב</button>
             </div>
           ) : (
             <>
