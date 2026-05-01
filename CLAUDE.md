@@ -121,3 +121,7 @@ The user runs the dev server locally in Cursor. Claude verifies changes with `np
 - API key is sent from browser. Acceptable for a personal prep tool; a `/api/generate` proxy would harden this.
 - No error boundary — uncaught throws blank the screen.
 - History UI (`HistorySidebar`) is not yet built; persistence works headlessly via `useQuiz`.
+
+## Session handoffs
+
+For workflow setup, recent decisions, gotchas (OneDrive vs git, Vercel auto-build, etc.), and the next-step plan for unbuilt features, see `docs/handoff.md`. Update it when wrapping a long working session so the next agent loads with context.
